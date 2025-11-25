@@ -12,7 +12,7 @@ echo ""
 echo "[+] Updating apt packages..."
 sudo apt update -y
 sudo apt upgrade -y
-sudo apt install -y curl wget git ufw build-essential
+sudo apt install -y curl wget git
 
 # -------------------------------------------------------
 # 2. Install NVM if missing
