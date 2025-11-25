@@ -78,6 +78,7 @@ sudo ufw allow 4000/tcp >/dev/null 2>&1
 # 8. Start worker via PM2
 # -------------------------------------------------------
 echo "[+] Starting worker using PM2..."
+npm i express axios
 pm2 start worker.js --name atom-worker
 pm2 save
 pm2 startup systemd -u "$USER" --hp "$HOME"
