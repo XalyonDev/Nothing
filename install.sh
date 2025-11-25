@@ -11,7 +11,6 @@ echo ""
 # -------------------------------------------------------
 echo "[+] Updating apt packages..."
 sudo apt update -y
-sudo apt upgrade -y
 sudo apt install -y curl wget git
 
 # -------------------------------------------------------
