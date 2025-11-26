@@ -146,7 +146,7 @@ app.post("/run-job", async (req, res) => {
 });
 
 /* ========== START SERVER ========== */
-const PORT = 4000;
+const PORT = 7000;
 app.listen(PORT, () => {
   console.log(`${GREEN}Worker listening on port ${PORT}${RESET}`);
 });
