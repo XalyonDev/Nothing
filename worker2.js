@@ -1,152 +1,188 @@
 // worker.js
 const express = require("express");
 const axios = require("axios");
-
 const app = express();
+
 app.use(express.json());
 
-const CONNECTION_TIMEOUT_MS = 30000;
+const TIMEOUT = 30000;
 
-// Console colors (optional)
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const RED = "\x1b[31m";
-const RESET = "\x1b[0m";
-
-/* ========== HELPERS ========== */
-function safeInt(str, def = 0) {
-  if (str == null) return def;
-  const n = parseInt(String(str).replace(/[^0-9]/g, ""), 10);
-  return Number.isNaN(n) ? def : n;
+/* HELPERS */
+function wait(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-/* ========== BALANCE / DATA / BILL ========== */
-async function fetchBalance(phone, userId, accessToken) {
-  const url = `https://store.atom.com.mm/mytmapi/v1/my/lightweight-balance?msisdn=${phone}&userid=${userId}&v=4.13.0`;
+function safeInt(x) {
+  if (!x) return 0;
+  const n = parseInt(String(x).replace(/[^0-9]/g, ""));
+  return isNaN(n) ? 0 : n;
+}
 
-  const headers = {
-    "User-Agent": "MyTM/4.13.0/Android/30",
-    "X-Server-Select": "production",
-    "Device-Name": "Xiaomi Redmi Note 8 Pro",
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${accessToken}`
+/* LOYALTY EXPIRE CHECK */
+function checkLoyaltyExpiry(balanceRes) {
+  try {
+    const packs =
+      balanceRes?.data?.attribute?.paclsPieData?.data?.packsList;
+
+    if (!Array.isArray(packs)) return { found: false };
+
+    const loyalty = packs.find(p => p?.title === "Loyalty Data Balance");
+
+    if (!loyalty || !loyalty.expireAt) return { found: false };
+
+    const exp = new Date(loyalty.expireAt);
+    const now = new Date();
+    const diff = (exp - now) / (1000 * 60 * 60 * 24);
+
+    return {
+      found: true,
+      expireAt: loyalty.expireAt,
+      daysLeft: diff,
+      nearExpiry: diff < 2
+    };
+  } catch (e) {
+    return { found: false };
+  }
+}
+
+/* REDEEM 100MB */
+async function redeemLoyaltyMB(phone, userid, token) {
+  const url = `https://store.atom.com.mm/mytmapi/v1/my/point-system/redeem?msisdn=${phone}&userid=${userid}&v=4.13.0`;
+
+  const payload = {
+    title: "ဒေတာ ၁၀၀ MB ",
+    rewardType: "telco",
+    keyword: "100MB",
+    partner: "ATOM",
+    category: "data"
   };
 
-  const res = await axios.get(url, { headers, timeout: CONNECTION_TIMEOUT_MS });
-  const json = res.data;
-
-  const attr = json?.data?.attribute;
-
-  // Mobile data
-  let mobiledata = "0 MB";
-  const packs = attr?.packsPieData;
-  const dataSection = packs?.data;
-
-  if (dataSection?.packsList?.length > 0) {
-    const pack = dataSection.packsList[0];
-    mobiledata = `${pack?.remainingAmount || 0}`;
-  }
-
-  // Bill
-  let balanceValue = attr?.mainBalance?.value;
-  if (balanceValue == null) balanceValue = "0";
-  balanceValue = balanceValue.toString();
-
-  const billInt = safeInt(balanceValue, 0);
-
-  return { mobiledata, billInt };
-}
-
-/* ========== POINT ========== */
-async function fetchPoint(phone, userId, accessToken) {
-  const url = `https://store.atom.com.mm/mytmapi/v1/my/point-system/dashboard?msisdn=${phone}&userid=${userId}&v=4.13.0`;
-
   const headers = {
-    "User-Agent": "MyTM/4.13.0/Android/30",
-    "X-Server-Select": "production",
-    "Device-Name": "Xiaomi Redmi Note 8 Pro",
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${accessToken}`
+    "user-agent": "MyTM/4.13.0/Android/30",
+    "device-name": "Xiaomi Redmi Note 8 Pro",
+    "x-server-select": "production",
+    "accept-encoding": "gzip",
+    "authorization": `Bearer ${token}`,
+    "content-type": "application/json"
   };
-
-  const res = await axios.get(url, { headers, timeout: CONNECTION_TIMEOUT_MS });
-  const json = res.data;
-
-  const pointValue = json?.data?.attribute?.totalPoint || "0";
-
-  return pointValue;
-}
-
-/* ========== 40G PROMO ========== */
-async function fetch40gPromo(phone, userId, accessToken) {
-  const url = `https://store.atom.com.mm/mytmapi/v1/my/packs/promo?tab=Data&msisdn=${phone}&userid=${userId}&v=4.13.0`;
-
-  const headers = {
-    "User-Agent": "MyTM/4.13.0/Android/30",
-    "X-Server-Select": "production",
-    "Device-Name": "Xiaomi Redmi Note 8 Pro",
-    "Accept-Encoding": "gzip",
-    Authorization: `Bearer ${accessToken}`
-  };
-
-  const res = await axios.get(url, { headers, timeout: CONNECTION_TIMEOUT_MS });
-  const json = res.data;
-
-  const list = json?.data?.attribute;
-  let is40g = 0;
-
-  if (Array.isArray(list)) {
-    is40g = list.some((item) => item.offerId === "2999.54") ? 1 : 0;
-  }
-
-  return is40g;
-}
-
-/* ========== MAIN JOB HANDLER ========== */
-app.post("/run-job", async (req, res) => {
-  const { phone, accessToken, userId } = req.body || {};
-
-  if (!phone || !accessToken || !userId) {
-    return res.status(400).json({ ok: false, error: "Missing phone/accessToken/userId" });
-  }
-
-  console.log(`${YELLOW}[JOB]${RESET} ${phone}`);
 
   try {
-    const [balance, point, promo] = await Promise.all([
-      fetchBalance(phone, userId, accessToken),
-      fetchPoint(phone, userId, accessToken),
-      fetch40gPromo(phone, userId, accessToken)
-    ]);
+    const res = await axios.post(url, payload, {
+      headers,
+      timeout: TIMEOUT
+    });
 
-    const mobiledata = balance.mobiledata;
-    const bill = balance.billInt;
-    const pointValue = point;
-    const is40g = promo;
+    return { ok: true, status: res.status, data: res.data };
+  } catch (err) {
+    return {
+      ok: false,
+      status: err?.response?.status,
+      error: err?.response?.data || err.message
+    };
+  }
+}
 
-    console.log(`${GREEN}[OK]${RESET} ${phone} data=${mobiledata} bill=${bill} point=${pointValue} is40g=${is40g}`);
+/* FETCH BALANCE */
+async function fetchBalance(phone, userid, token) {
+  const url = `https://store.atom.com.mm/mytmapi/v1/my/lightweight-balance?msisdn=${phone}&userid=${userid}&v=4.13.0`;
 
-    return res.status(200).json({
+  const headers = {
+    "User-Agent": "MyTM/4.13.0/Android/30",
+    "X-Server-Select": "production",
+    "Device-Name": "Xiaomi Redmi Note 8 Pro",
+    Authorization: `Bearer ${token}`
+  };
+
+  const res = await axios.get(url, { headers, timeout: TIMEOUT });
+  return res.data;
+}
+
+/* POINTS */
+async function fetchPoint(phone, userid, token) {
+  const url = `https://store.atom.com.mm/mytmapi/v1/my/point-system/dashboard?msisdn=${phone}&userid=${userid}&v=4.13.0`;
+
+  const headers = {
+    "User-Agent": "MyTM/4.13.0/Android/30",
+    Authorization: `Bearer ${token}`
+  };
+
+  const res = await axios.get(url, { headers, timeout: TIMEOUT });
+  return (
+    res.data?.data?.attribute?.totalPoint || "0"
+  );
+}
+
+/* PROMO */
+async function fetch40gPromo(phone, userid, token) {
+  const url = `https://store.atom.com.mm/mytmapi/v1/my/packs/promo?tab=Data&msisdn=${phone}&userid=${userid}&v=4.13.0`;
+
+  const headers = {
+    "User-Agent": "MyTM/4.13.0/Android/30",
+    Authorization: `Bearer ${token}`
+  };
+
+  const res = await axios.get(url, { headers, timeout: TIMEOUT });
+  const list = res.data?.data?.attribute;
+
+  if (Array.isArray(list)) {
+    return list.some(p => p.offerId === "2999.54") ? 1 : 0;
+  }
+  return 0;
+}
+
+/* MAIN JOB ENDPOINT */
+app.post("/run-job", async (req, res) => {
+  const { phone, accessToken, userId } = req.body;
+
+  if (!phone || !accessToken || !userId) {
+    return res.status(400).json({ ok: false, error: "missing fields" });
+  }
+
+  try {
+    // Fetch balance + data + bill
+    const balanceRes = await fetchBalance(phone, userId, accessToken);
+
+    const attr = balanceRes?.data?.attribute;
+
+    // Mobile data
+    let mobiledata = "0 MB";
+    const packs = attr?.packsPieData?.data?.packsList;
+    if (Array.isArray(packs) && packs.length > 0)
+      mobiledata = packs[0]?.remainingAmount || "0 MB";
+
+    // Bill
+    const billValue = safeInt(attr?.mainBalance?.value);
+
+    // Point
+    const point = await fetchPoint(phone, userId, accessToken);
+
+    // Promo
+    const is40g = await fetch40gPromo(phone, userId, accessToken);
+
+    // Loyalty check
+    const loyalty = checkLoyaltyExpiry(balanceRes);
+
+    let autoRedeem = null;
+
+    if (loyalty.found && loyalty.nearExpiry) {
+      autoRedeem = await redeemLoyaltyMB(phone, userId, accessToken);
+    }
+
+    return res.json({
       ok: true,
-      phone,
       mobiledata,
-      bill,
-      point: pointValue,
-      is40g
+      bill: billValue,
+      point,
+      is40g,
+      loyalty,
+      autoRedeem
     });
   } catch (err) {
-    const status = err.response?.status || 500;
-    console.log(`${RED}[ERROR]${RESET} ${phone} → ${status} ${err.message}`);
-    return res.status(status).json({
+    return res.status(500).json({
       ok: false,
-      phone,
-      error: err.message || "Worker error"
+      error: err.message || "worker failed"
     });
   }
 });
 
-/* ========== START SERVER ========== */
-const PORT = 7000;
-app.listen(PORT, () => {
-  console.log(`${GREEN}Worker listening on port ${PORT}${RESET}`);
-});
+app.listen(4000, () => console.log("Worker running on port 4000"));
